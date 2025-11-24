@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JobMet WebSocket Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+        #messages {
+            margin-top: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+            background: #fafafa;
+        }
+        .message {
+            padding: 8px;
+            margin: 5px 0;
+            border-left: 3px solid #007bff;
+            background: white;
+            border-radius: 3px;
+        }
+        .message.progress {
+            border-left-color: #28a745;
+        }
+        .message.error {
+            border-left-color: #dc3545;
+        }
+        .timestamp {
+            color: #666;
+            font-size: 0.85em;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔌 JobMet WebSocket Test</h1>
+        <p>Test real-time search progress updates</p>
+        
+        <div id="status" class="status connecting">⏳ Connecting...</div>
+        
+        <div>
+            <button id="pingBtn" disabled>Send Ping</button>
+            <button id="reconnectBtn" disabled>Reconnect</button>
+            <button id="clearBtn">Clear Messages</button>
+        </div>
+        
+        <h3>Messages:</h3>
+        <div id="messages"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        const statusDiv = document.getElementById('status');
+        const messagesDiv = document.getElementById('messages');
+        const pingBtn = document.getElementById('pingBtn');
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        
+        // User ID (in production, this would come from authentication)
+        const userId = 'test-user-' + Math.random().toString(36).substr(2, 9);
+        
+        function connect() {
+            const wsUrl = `ws://localhost:8000/ws/search/${userId}`;
+            console.log('Connecting to:', wsUrl);
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('✓ WebSocket connected');
+                statusDiv.className = 'status connected';
+                statusDiv.textContent = '✓ Connected';
+                pingBtn.disabled = false;
+                reconnectBtn.disabled = true;
+                
+                addMessage('System', 'Connected to WebSocket', 'progress');
+            };
+            
+            ws.onmessage = (event) => {
+                console.log('Message received:', event.data);
+                
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'search_progress') {
+                        const stage = data.stage;
+                        const info = data.data;
+                        
+                        let message = `Stage: ${stage}`;
+                        if (info.message) {
+                            message += ` - ${info.message}`;
+                        }
+                        if (info.total_jobs) {
+                            message += ` (${info.total_jobs} jobs)`;
+                        }
+                        if (info.processing_time) {
+                            message += ` [${info.processing_time.toFixed(2)}s]`;
+                        }
+                        
+                        addMessage('Progress', message, 'progress');
+                    } else {
+                        addMessage('Data', JSON.stringify(data, null, 2));
+                    }
+                } catch (e) {
+                    // Plain text message (e.g., "pong")
+                    addMessage('Server', event.data);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                addMessage('Error', 'Connection error occurred', 'error');
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                statusDiv.className = 'status disconnected';
+                statusDiv.textContent = '❌ Disconnected';
+                pingBtn.disabled = true;
+                reconnectBtn.disabled = false;
+                
+                addMessage('System', 'Disconnected from WebSocket', 'error');
+            };
+        }
+        
+        function addMessage(type, content, className = '') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${className}`;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            messageDiv.innerHTML = `
+                <strong>${type}:</strong> ${content}
+                <div class="timestamp">${timestamp}</div>
+            `;
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        pingBtn.onclick = () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send('ping');
+                addMessage('Client', 'Sent: ping');
+            }
+        };
+        
+        reconnectBtn.onclick = () => {
+            connect();
+        };
+        
+        clearBtn.onclick = () => {
+            messagesDiv.innerHTML = '';
+        };
+        
+        // Connect on page load
+        connect();
+    </script>
+</body>
+</html>

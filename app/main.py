@@ -1,70 +1,116 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from sqlalchemy import text
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.core.config import settings
-from app.core.database import get_db
-from app.api.v1.routes_candidate import router as candidate_router
-from app.api.v1.routes_jobs import router as jobs_router
-from app.core.logging_config import setup_logging
-import logging
-import os
+from app.core.database import engine, Base
+from app.core.monitoring import init_sentry
+from app.core.rate_limiter import limiter
+from app.middleware.logging_middleware import LoggingMiddleware
+from app.middleware.error_handler import (
+    validation_exception_handler,
+    http_exception_handler,
+    database_exception_handler,
+    general_exception_handler
+)
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
 
-# Setup logging
-setup_logging()
-logger = logging.getLogger(__name__)
+# Initialize monitoring
+init_sentry()
 
-app = FastAPI(title=settings.PROJECT_NAME)
+# Create database tables
+Base.metadata.create_all(bind=engine)
 
-# Configure CORS
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version="3.0.0",
+    description="JobMet.ai Backend API - Production Ready"
+)
+
+# Add rate limiter
+app.state.limiter = limiter
+
+# Add middleware
+app.add_middleware(LoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Add startup event
+# Add exception handlers
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(SQLAlchemyError, database_exception_handler)
+app.add_exception_handler(Exception, general_exception_handler)
+
+# Import routers
+from app.api.v1 import (
+    auth, profile, search, bookmarks,
+    saved_searches, applications, recommendations, analytics, monitoring
+)
+
+# Include routers
+app.include_router(auth.router, prefix=settings.API_V1_PREFIX, tags=["auth"])
+app.include_router(profile.router, prefix=settings.API_V1_PREFIX, tags=["profile"])
+app.include_router(search.router, prefix=settings.API_V1_PREFIX, tags=["search"])
+app.include_router(bookmarks.router, prefix=settings.API_V1_PREFIX, tags=["bookmarks"])
+app.include_router(saved_searches.router, prefix=settings.API_V1_PREFIX, tags=["saved_searches"])
+app.include_router(applications.router, prefix=settings.API_V1_PREFIX, tags=["applications"])
+app.include_router(recommendations.router, prefix=settings.API_V1_PREFIX, tags=["recommendations"])
+app.include_router(analytics.router, prefix=settings.API_V1_PREFIX, tags=["analytics"])
+app.include_router(monitoring.router, prefix=settings.API_V1_PREFIX, tags=["monitoring"])
+
+@app.get("/")
+async def root():
+    return {
+        "message": "JobMet.ai Backend API",
+        "version": "3.0.0",
+        "status": "production",
+        "features": [
+            "Multi-source job search",
+            "Agentic RAG filtering",
+            "Real-time WebSocket updates",
+            "Background job processing",
+            "Caching & rate limiting",
+            "Error tracking & monitoring"
+        ]
+    }
+
+@app.get("/health")
+async def health_check():
+    """Basic health check"""
+    return {"status": "healthy"}
+
 @app.on_event("startup")
 async def startup_event():
-    logger.info("JobMet.AI API starting up...")
-    logger.info(f"OpenAI configured: {bool(settings.OPENAI_API_KEY)}")
+    from app.utils.logger import logger
+    logger.info("🚀 JobMet Backend starting up...")
+    logger.info(f"Environment: {settings.ENVIRONMENT}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("JobMet.AI API shutting down...")
+    from app.utils.logger import logger
+    logger.info("👋 JobMet Backend shutting down...")
 
-@app.get("/health")
-async def health_check(db: Session = Depends(get_db)):
-    """Health check endpoint for monitoring"""
+# WebSocket endpoint
+from fastapi import WebSocket, WebSocketDisconnect
+from app.services.websocket_manager import ws_manager
+
+@app.websocket("/ws/search/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    """WebSocket endpoint for real-time search updates"""
+    await ws_manager.connect(websocket, user_id)
     try:
-        # Test database connection
-        db.execute(text("SELECT 1"))
-        
-        # Test OpenAI key is set
-        has_openai = bool(os.getenv("OPENAI_API_KEY"))
-        
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "openai_configured": has_openai
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return {
-            "status": "unhealthy",
-            "error": str(e)
-        }
-
-app.include_router(
-    candidate_router,
-    prefix=f"{settings.API_V1_PREFIX}/candidate",
-    tags=["candidate"],
-)
-
-app.include_router(
-    jobs_router,
-    prefix=f"{settings.API_V1_PREFIX}/jobs",
-    tags=["jobs"],
-)
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket, user_id)
