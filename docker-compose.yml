@@ -9,30 +9,67 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/jobmet
+      - DATABASE_URL=postgresql://user:password@db:5432/jobmet
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - .:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - jobmet-network
 
   db:
-    container_name: jobmet-db
-    image: postgres:15
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+    image: pgvector/pgvector:pg15
+    container_name: jobmet-postgres
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
       - POSTGRES_DB=jobmet
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      test: [ "CMD-SHELL", "pg_isready -U user" ]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - jobmet-network
+
+  neo4j:
+    image: neo4j:5.16-community
+    container_name: jobmet-neo4j
+    environment:
+      - NEO4J_AUTH=neo4j/jobmet123
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - ./neo4j:/import
+    networks:
+      - jobmet-network
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: jobmet-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - jobmet-network
 
 volumes:
   postgres_data:
+  neo4j_data:
+  redis_data:
+
+
+networks:
+  jobmet-network:
+    driver: bridge
